@@ -1,0 +1,120 @@
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+from PIL import Image, ImageDraw, ImageFont, ImageTk
+import cv2
+import pytesseract
+import math
+
+# ---------- CONFIG ----------
+base_canvas_width = 1200
+base_canvas_height = 800
+background_color = (255, 255, 255)
+text_color = (0, 0, 0)
+box_color = (255, 0, 0)
+max_font_size = 30
+min_font_size = 10
+padding = 10
+font_path = None
+
+sections_data = []  # list of lists, each section is a list of strings
+
+# ---------- FUNCTIONS ----------
+def scan_function(input_data):
+    return [{"text": line, "position": (0, i)} for i, line in enumerate(input_data)]
+
+def draw_section_dynamic_font(features, canvas, top_left, cell_width, cell_height):
+    draw = ImageDraw.Draw(canvas)
+    font_size = max_font_size
+    while font_size >= min_font_size:
+        font = ImageFont.load_default() if font_path is None else ImageFont.truetype(None, font_size)
+        total_height = sum([draw.textsize(f['text'], font=font)[1] for f in features]) + padding
+        max_width = max([draw.textsize(f['text'], font=font)[0] for f in features]) + padding
+        if total_height <= cell_height and max_width <= cell_width:
+            break
+        font_size -= 1
+    draw.rectangle([top_left[0]-2, top_left[1]-2, top_left[0]+cell_width, top_left[1]+cell_height], outline=box_color, width=2)
+    current_y = top_left[1]
+    for feature in features:
+        draw.text((top_left[0], current_y), feature["text"], fill=text_color, font=font)
+        current_y += draw.textsize(feature["text"], font=font)[1] + 5
+
+def calculate_canvas_size(num_sections, base_width, base_height):
+    cols = math.ceil(math.sqrt(num_sections))
+    rows = math.ceil(num_sections / cols)
+    return base_width * cols // 2, base_height * rows // 2
+
+def auto_layout_positions(num_sections, canvas_width, canvas_height):
+    cols = math.ceil(math.sqrt(num_sections))
+    rows = math.ceil(num_sections / cols)
+    cell_width = canvas_width // cols
+    cell_height = canvas_height // rows
+    positions = []
+    for i in range(num_sections):
+        row = i // cols
+        col = i % cols
+        x = col * cell_width + padding
+        y = row * cell_height + padding
+        positions.append((x, y, cell_width - 2*padding, cell_height - 2*padding))
+    return positions
+
+def update_canvas_image():
+    if not sections_data:
+        return
+    canvas_width, canvas_height = calculate_canvas_size(len(sections_data), base_canvas_width, base_canvas_height)
+    img = Image.new("RGB", (canvas_width, canvas_height), background_color)
+    positions = auto_layout_positions(len(sections_data), canvas_width, canvas_height)
+    for features, pos in zip(sections_data, positions):
+        x, y, cell_w, cell_h = pos
+        draw_section_dynamic_font(scan_function(features), img, (x, y), cell_w, cell_h)
+    tk_img = ImageTk.PhotoImage(img.resize((800, 600)))  # scale for preview
+    canvas_preview.config(image=tk_img)
+    canvas_preview.image = tk_img
+    return img
+
+def add_section():
+    section_text = simpledialog.askstring("Add Section", "Enter section text (use \\n for new lines):")
+    if section_text:
+        sections_data.append(section_text.split("\\n"))
+        update_canvas_image()
+
+def remove_section():
+    if sections_data:
+        sections_data.pop()
+        update_canvas_image()
+    else:
+        messagebox.showinfo("Info", "No section to remove")
+
+def save_files():
+    img = update_canvas_image()
+    if img:
+        img.save("gui_dynamic_sections.png")
+        img.convert('RGB').save("gui_dynamic_sections.pdf")
+        messagebox.showinfo("Saved", "PNG and PDF files saved!")
+        # OCR
+        cv_img = cv2.imread("gui_dynamic_sections.png")
+        gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        extracted = {}
+        for idx, cnt in enumerate(contours):
+            x, y, w, h = cv2.boundingRect(cnt)
+            roi = gray[y:y+h, x:x+w]
+            text = pytesseract.image_to_string(roi, config='--psm 6').strip()
+            if text:
+                extracted[f"part{idx+1}"] = text
+        print("OCR extracted:", extracted)
+
+# ---------- GUI ----------
+root = tk.Tk()
+root.title("Realtime Dynamic Multi-Section GUI")
+
+btn_frame = tk.Frame(root)
+btn_frame.pack(side=tk.TOP, fill=tk.X)
+tk.Button(btn_frame, text="Add Section", command=add_section).pack(side=tk.LEFT)
+tk.Button(btn_frame, text="Remove Section", command=remove_section).pack(side=tk.LEFT)
+tk.Button(btn_frame, text="Save & OCR", command=save_files).pack(side=tk.LEFT)
+
+canvas_preview = tk.Label(root)
+canvas_preview.pack()
+
+root.mainloop()
