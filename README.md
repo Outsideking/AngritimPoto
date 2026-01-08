@@ -1,3 +1,5 @@
+Thanva Phupingbut 244 ขอมอบกำไรที่จะได้ทั้งหมดแก่คนยากไรและตาบอทและต่างๆ ขอบคุณครับ
+
 ความสามารถของอัลกอริทึม (Auto-run Text-Based Image + OCR)
 
 1. สร้างภาพจากข้อความหลายส่วน (Multi-Section Text Rendering)
