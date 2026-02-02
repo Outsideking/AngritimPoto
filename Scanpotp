@@ -1,88 +1,130 @@
-
+import os
+import time
 from PIL import Image, ImageDraw, ImageFont
 import cv2
 import pytesseract
-import numpy as np
+import json
 
----------- CONFIG ----------
-
+# ---------- CONFIG ----------
+input_folder = "input_files"
+output_folder = "output_files"
 canvas_width = 800
 canvas_height = 400
 background_color = (255, 255, 255)
 text_color = (0, 0, 0)
-box_color = (255, 0, 0)  # สีกรอบ
+box_color = (255, 0, 0)
 font_size = 20
-font_path = None  # ใช้ default font
+font_path = None
+ocr_langs = "eng+tha"
+grid_cols = 2
+max_parts_per_canvas = 4
+poll_interval = 5  # วินาทีในการเช็คไฟล์ใหม่
 
----------- FUNCTIONS ----------
-
+# ---------- UTILS ----------
 def scan_function(input_data):
-features = []
-for i, line in enumerate(input_data):
-features.append({
-"text": line,
-"position": (10, i * (font_size + 10))
-})
-return features
+    features = []
+    for i, line in enumerate(input_data):
+        features.append({
+            "text": line,
+            "position": (10, i * (font_size + 10))
+        })
+    return features
 
 def draw_function(features, canvas, offset=(0,0)):
-draw = ImageDraw.Draw(canvas)
-font = ImageFont.load_default() if not font_path else ImageFont.truetype(font_path, font_size)
-max_x, max_y = 0, 0
-for feature in features:
-x, y = feature["position"]
-draw.text((x + offset[0], y + offset[1]), feature["text"], fill=text_color, font=font)
-# คำนวณขนาดของกรอบ
-text_width, text_height = draw.textsize(feature["text"], font=font)
-max_x = max(max_x, x + offset[0] + text_width)
-max_y = max(max_y, y + offset[1] + text_height)
-# วาด bounding box รอบ features
-draw.rectangle([offset[0], offset[1], max_x + 5, max_y + 5], outline=box_color, width=2)
-return (offset[0], offset[1], max_x + 5, max_y + 5)  # คืนค่า bounding box
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default() if not font_path else ImageFont.truetype(font_path, font_size)
+    boxes = []
+    for feature in features:
+        x, y = feature["position"]
+        draw.text((x + offset[0], y + offset[1]), feature["text"], fill=text_color, font=font)
+        text_width, text_height = draw.textsize(feature["text"], font=font)
+        box = (x + offset[0], y + offset[1], x + offset[0] + text_width, y + offset[1] + text_height)
+        draw.rectangle(box, outline=box_color, width=2)
+        boxes.append(box)
+    return boxes
 
 def postprocess_image(canvas):
-return canvas
+    return canvas
 
-def scan_image_for_text(image_path, bounding_boxes):
-"""
-OCR แยกส่วนตาม bounding box
-"""
-img = cv2.imread(image_path)
-gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-results = {}
-for idx, box in enumerate(bounding_boxes):
-x1, y1, x2, y2 = box
-roi = gray[y1:y2, x1:x2]
-text = pytesseract.image_to_string(roi)
-results[f'part{idx+1}'] = text.strip()
-return results
+def scan_image_for_text(image_path, bounding_boxes, langs=ocr_langs):
+    img = cv2.imread(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    results = {}
+    for idx, box in enumerate(bounding_boxes):
+        x1, y1, x2, y2 = box
+        roi = gray[y1:y2, x1:x2]
+        text = pytesseract.image_to_string(roi, lang=langs)
+        results[f'part{idx+1}'] = text.strip()
+    return results
 
----------- MAIN ----------
+# ---------- AGENTIC PIPELINE ----------
+def process_file_agentic(file_name, parts_dict):
+    pages_output = []
+    page_index = 1
+    part_items = list(parts_dict.items())
 
-if name == "main":
-source_data_part1 = ["Part1: Hello World!", "Part1: Line 2"]
-source_data_part2 = ["Part2: Python Algorithm", "Part2: Line B"]
+    while part_items:
+        canvas = Image.new("RGB", (canvas_width, canvas_height), background_color)
+        all_boxes = []
+        feature_map = {}
+        x_offset, y_offset, col = 10, 10, 0
 
-canvas = Image.new("RGB", (canvas_width, canvas_height), background_color)  
-bounding_boxes = []  
+        for _ in range(min(max_parts_per_canvas, len(part_items))):
+            part_name, lines = part_items.pop(0)
+            features = scan_function(lines)
+            boxes = draw_function(features, canvas, offset=(x_offset, y_offset))
+            all_boxes.extend(boxes)
+            feature_map[part_name] = {"features": features, "boxes": boxes}
 
-# Process part 1  
-features_part1 = scan_function(source_data_part1)  
-box1 = draw_function(features_part1, canvas, offset=(10,10))  
-bounding_boxes.append(box1)  
+            max_height = max([b[3]-b[1] for b in boxes]) + 20
+            y_offset += max_height
+            if y_offset > canvas_height - 50:
+                col += 1
+                x_offset = col * (canvas_width//grid_cols) + 10
+                y_offset = 10
 
-# Process part 2  
-features_part2 = scan_function(source_data_part2)  
-box2 = draw_function(features_part2, canvas, offset=(canvas_width//2,10))  
-bounding_boxes.append(box2)  
+        # Save image
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+        output_file = os.path.join(output_folder, f"{file_name}_page_{page_index}.png")
+        final_image = postprocess_image(canvas)
+        final_image.save(output_file)
 
-# Save image  
-output_file = "combined_image_with_boxes.png"  
-final_image = postprocess_image(canvas)  
-final_image.save(output_file)  
-print(f"Image saved as {output_file}")  
+        # OCR
+        ocr_results = scan_image_for_text(output_file, all_boxes, langs=ocr_langs)
 
-# OCR แยก part1 และ part2  
-extracted_texts = scan_image_for_text(output_file, bounding_boxes)  
-for part, text in extracted_texts.items():  
-    print(f"{part} extracted text:\n{text}\n")
+        page_json = {
+            "page_index": page_index,
+            "image_file": output_file,
+            "parts": feature_map,
+            "ocr_results": ocr_results
+        }
+        pages_output.append(page_json)
+        page_index += 1
+
+    # Save JSON for this file
+    json_file = os.path.join(output_folder, f"{file_name}_output.json")
+    with open(json_file, "w", encoding="utf-8") as f:
+        json.dump(pages_output, f, ensure_ascii=False, indent=4)
+
+    return pages_output
+
+# ---------- WATCH FOLDER ----------
+def watch_folder_agentic():
+    seen_files = set()
+    while True:
+        all_files = [f for f in os.listdir(input_folder) if f.endswith(".json")]
+        new_files = [f for f in all_files if f not in seen_files]
+        for file_name in new_files:
+            file_path = os.path.join(input_folder, file_name)
+            with open(file_path, "r", encoding="utf-8") as f:
+                parts_dict = json.load(f)
+            print(f"\nProcessing new file: {file_name}")
+            process_file_agentic(os.path.splitext(file_name)[0], parts_dict)
+            seen_files.add(file_name)
+        time.sleep(poll_interval)
+
+# ---------- MAIN ----------
+if __name__ == "__main__":
+    print(f"Watching folder '{input_folder}' for new JSON input files...")
+    watch_folder_agentic()
